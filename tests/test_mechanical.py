@@ -1,5 +1,8 @@
 """ANSYS Mechanical 인터페이스 테스트."""
 
+from unittest.mock import MagicMock, patch
+
+import numpy as np
 import pytest
 
 from ansys_utils.mechanical import (
@@ -62,14 +65,19 @@ class TestMechanicalSession:
         with pytest.raises(FileNotFoundError):
             session.open_database("nonexistent.db")
 
-    def test_open_database_success(self, tmp_path):
+    @patch("ansys_utils.mechanical.launch_mapdl")
+    def test_open_database_success(self, mock_launch, tmp_path):
         """데이터베이스 열기 성공을 테스트합니다."""
+        mock_mapdl = MagicMock()
+        mock_launch.return_value = mock_mapdl
+
         db_file = tmp_path / "test.db"
         db_file.write_text("mock db content")
 
         session = MechanicalSession()
         session.open_database(str(db_file))
         assert session._is_connected is True
+        mock_mapdl.resume.assert_called_once_with(str(db_file))
 
     def test_solve_without_database(self):
         """데이터베이스 없이 해석 실행을 테스트합니다."""
@@ -77,8 +85,12 @@ class TestMechanicalSession:
         with pytest.raises(RuntimeError, match="데이터베이스가 열려 있지 않습니다"):
             session.solve()
 
-    def test_solve_invalid_type(self, tmp_path):
+    @patch("ansys_utils.mechanical.launch_mapdl")
+    def test_solve_invalid_type(self, mock_launch, tmp_path):
         """잘못된 해석 유형으로 해석 실행을 테스트합니다."""
+        mock_mapdl = MagicMock()
+        mock_launch.return_value = mock_mapdl
+
         db_file = tmp_path / "test.db"
         db_file.write_text("mock db content")
 
@@ -88,8 +100,12 @@ class TestMechanicalSession:
         with pytest.raises(ValueError, match="지원하지 않는 해석 유형"):
             session.solve(solver_type="INVALID")
 
-    def test_solve_valid_types(self, tmp_path):
+    @patch("ansys_utils.mechanical.launch_mapdl")
+    def test_solve_valid_types(self, mock_launch, tmp_path):
         """지원 해석 유형으로 해석 실행을 테스트합니다."""
+        mock_mapdl = MagicMock()
+        mock_launch.return_value = mock_mapdl
+
         db_file = tmp_path / "test.db"
         db_file.write_text("mock db content")
 
@@ -105,8 +121,54 @@ class TestMechanicalSession:
         with pytest.raises(RuntimeError):
             session.get_deformation()
 
-    def test_context_manager(self, tmp_path):
+    @patch("ansys_utils.mechanical.launch_mapdl")
+    def test_get_deformation_returns_result(self, mock_launch, tmp_path):
+        """변형 결과 반환을 테스트합니다."""
+        mock_mapdl = MagicMock()
+        mock_launch.return_value = mock_mapdl
+        mock_mapdl.post_processing.nodal_displacement.return_value = (
+            np.array([0.0, 1.5, 3.0, 0.5])
+        )
+
+        db_file = tmp_path / "test.db"
+        db_file.write_text("mock db content")
+
+        session = MechanicalSession()
+        session.open_database(str(db_file))
+        result = session.get_deformation()
+
+        assert isinstance(result, DeformationResult)
+        assert result.max_deformation == pytest.approx(3.0)
+        assert result.min_deformation == pytest.approx(0.0)
+        assert len(result.node_deformations) == 4
+
+    @patch("ansys_utils.mechanical.launch_mapdl")
+    def test_get_stress_returns_result(self, mock_launch, tmp_path):
+        """응력 결과 반환을 테스트합니다."""
+        mock_mapdl = MagicMock()
+        mock_launch.return_value = mock_mapdl
+        mock_mapdl.post_processing.nodal_eqv_stress.return_value = (
+            np.array([10.0, 50.0, 200.0, 150.0])
+        )
+
+        db_file = tmp_path / "test.db"
+        db_file.write_text("mock db content")
+
+        session = MechanicalSession()
+        session.open_database(str(db_file))
+        result = session.get_stress()
+
+        assert isinstance(result, StressResult)
+        assert result.max_von_mises == pytest.approx(200.0)
+        assert result.min_von_mises == pytest.approx(10.0)
+        assert len(result.node_stresses) == 4
+
+    @patch("ansys_utils.mechanical.launch_mapdl")
+    def test_context_manager(self, mock_launch, tmp_path):
         """컨텍스트 매니저 사용을 테스트합니다."""
+        mock_mapdl = MagicMock()
+        mock_launch.return_value = mock_mapdl
+
         db_file = tmp_path / "test.db"
         db_file.write_text("mock db content")
 
@@ -115,3 +177,36 @@ class TestMechanicalSession:
             assert session._is_connected is True
 
         assert session._is_connected is False
+        mock_mapdl.exit.assert_called_once()
+
+    @patch("ansys_utils.mechanical.launch_mapdl")
+    def test_close_cleans_up(self, mock_launch):
+        """close()가 리소스를 정리하는지 테스트합니다."""
+        mock_mapdl = MagicMock()
+        mock_launch.return_value = mock_mapdl
+
+        session = MechanicalSession()
+        session.launch()
+        assert session._is_connected is True
+        assert session._mapdl is not None
+
+        session.close()
+        assert session._is_connected is False
+        assert session._mapdl is None
+        mock_mapdl.exit.assert_called_once()
+
+    @patch("ansys_utils.mechanical.launch_mapdl")
+    def test_connect_to_server(self, mock_launch):
+        """기존 MAPDL 서버 연결을 테스트합니다."""
+        mock_mapdl = MagicMock()
+        mock_launch.return_value = mock_mapdl
+
+        session = MechanicalSession()
+        session.connect(ip="192.168.1.100", port=50053)
+
+        assert session._is_connected is True
+        mock_launch.assert_called_once_with(
+            start_instance=False,
+            ip="192.168.1.100",
+            port=50053,
+        )

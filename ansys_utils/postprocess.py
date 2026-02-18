@@ -3,9 +3,17 @@
 from pathlib import Path
 from typing import Optional, Tuple
 
+import numpy as np
+from ansys.mapdl.reader import read_binary
+
 
 class ResultsPlotter:
-    """ANSYS 결과 시각화 클래스."""
+    """ANSYS 결과 시각화 클래스.
+
+    ansys-mapdl-reader를 사용하여 .rst/.rfl/.res 결과 파일을
+    읽고 pyvista 기반으로 시각화합니다. lazy loading 패턴을 사용하여
+    첫 플롯 호출 시 자동으로 파일을 로드합니다.
+    """
 
     SUPPORTED_FORMATS = {".rst", ".rfl", ".res"}
 
@@ -19,6 +27,7 @@ class ResultsPlotter:
         self.results_path = Path(results_file)
         self._validate_file()
         self._data_loaded = False
+        self._result = None
 
     def _validate_file(self) -> None:
         """결과 파일의 유효성을 검사합니다."""
@@ -34,6 +43,7 @@ class ResultsPlotter:
 
     def load(self) -> None:
         """결과 파일을 로드합니다."""
+        self._result = read_binary(str(self.results_path))
         self._data_loaded = True
 
     def plot_von_mises_stress(
@@ -53,11 +63,17 @@ class ResultsPlotter:
         if not self._data_loaded:
             self.load()
 
-        print(
-            f"Von Mises 응력 플롯 생성 중... "
-            f"(colormap={colormap}, show_edges={show_edges})"
-        )
+        plot_kwargs = {
+            "comp": "SEQV",
+            "cmap": colormap,
+            "show_edges": show_edges,
+        }
         if output:
+            plot_kwargs["screenshot"] = output
+
+        self._result.plot_nodal_stress(0, **plot_kwargs)
+
+        if output and self.results_path:
             print(f"파일로 저장: {output}")
 
     def plot_deformation(
@@ -75,7 +91,12 @@ class ResultsPlotter:
         if not self._data_loaded:
             self.load()
 
-        print(f"변형 플롯 생성 중... (scale_factor={scale_factor})")
+        plot_kwargs = {}
+        if output:
+            plot_kwargs["screenshot"] = output
+
+        self._result.plot_nodal_solution(0, **plot_kwargs)
+
         if output:
             print(f"파일로 저장: {output}")
 
@@ -94,4 +115,19 @@ class ResultsPlotter:
             raise ValueError(
                 f"지원하지 않는 결과 유형: {result_type}. 지원 유형: {valid_types}"
             )
-        return (0.0, 0.0)
+
+        if not self._data_loaded:
+            self.load()
+
+        if result_type == "stress":
+            nnum, stress = self._result.principal_nodal_stress(0)
+            von_mises = stress[:, -1]
+            return (float(np.min(von_mises)), float(np.max(von_mises)))
+        elif result_type == "deformation":
+            nnum, disp = self._result.nodal_displacement(0)
+            total = np.linalg.norm(disp[:, :3], axis=1)
+            return (float(np.min(total)), float(np.max(total)))
+        else:  # strain
+            nnum, strain = self._result.nodal_elastic_strain(0)
+            eqv = strain[:, -1]
+            return (float(np.min(eqv)), float(np.max(eqv)))
